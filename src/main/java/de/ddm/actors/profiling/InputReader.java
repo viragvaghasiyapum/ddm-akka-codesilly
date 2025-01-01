@@ -9,8 +9,10 @@ import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import com.opencsv.CSVReader;
 import com.opencsv.exceptions.CsvValidationException;
+import de.ddm.actors.patterns.Reaper;
 import de.ddm.serialization.AkkaSerializable;
 import de.ddm.singletons.InputConfigurationSingleton;
+import de.ddm.singletons.OutputConfigurationSingleton;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -43,7 +45,12 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 	public static class ReadBatchMessage implements Message {
 		private static final long serialVersionUID = -7915854043207237318L;
 		ActorRef<DependencyMiner.Message> replyTo;
-		int batchSize;
+	}
+
+	@Getter
+	@NoArgsConstructor
+	public static class ShutdownMessage implements Message {
+		private static final long serialVersionUID = -8935783987324578324L;
 	}
 
 	////////////////////////
@@ -58,6 +65,7 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 
 	private InputReader(ActorContext<Message> context, final int id, final File inputFile) throws IOException, CsvValidationException {
 		super(context);
+		Reaper.watchWithDefaultReaper(this.getContext().getSelf());
 		this.id = id;
 		this.reader = InputConfigurationSingleton.get().createCSVReader(inputFile);
 		this.header = InputConfigurationSingleton.get().getHeader(inputFile);
@@ -71,6 +79,7 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 	/////////////////
 
 	private final int id;
+	private final int batchSize = OutputConfigurationSingleton.get().getInputReaderBatchSize();
 	private final CSVReader reader;
 	private final String[] header;
 
@@ -83,6 +92,7 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 		return newReceiveBuilder()
 				.onMessage(ReadHeaderMessage.class, this::handle)
 				.onMessage(ReadBatchMessage.class, this::handle)
+				.onMessage(ShutdownMessage.class, this::handle)
 				.onSignal(PostStop.class, this::handle)
 				.build();
 	}
@@ -93,8 +103,8 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 	}
 
 	private Behavior<Message> handle(ReadBatchMessage message) throws IOException, CsvValidationException {
-		List<String[]> batch = new ArrayList<>(message.getBatchSize());
-		for (int i = 0; i < message.getBatchSize(); i++) {
+		List<String[]> batch = new ArrayList<>(this.batchSize);
+		for (int i = 0; i < this.batchSize; i++) {
 			String[] line = this.reader.readNext();
 			if (line == null)
 				break;
@@ -108,5 +118,10 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 	private Behavior<Message> handle(PostStop signal) throws IOException {
 		this.reader.close();
 		return this;
+	}
+
+	private Behavior<Message> handle(ShutdownMessage message) throws IOException {
+		this.reader.close();
+		return Behaviors.stopped();
 	}
 }

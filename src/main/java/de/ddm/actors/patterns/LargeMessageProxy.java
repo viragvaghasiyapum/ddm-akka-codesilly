@@ -80,6 +80,12 @@ public class LargeMessageProxy extends AbstractBehavior<LargeMessageProxy.Messag
 		private int receiverTransmissionKey;
 	}
 
+	@Getter
+	@NoArgsConstructor
+	public static class ShutdownMessage implements Message {
+		private static final long serialVersionUID = 5897345987457014051L;
+	}
+
 	////////////////////////
 	// Actor Construction //
 	////////////////////////
@@ -141,6 +147,7 @@ public class LargeMessageProxy extends AbstractBehavior<LargeMessageProxy.Messag
 				.onMessage(ConnectAckMessage.class, this::handle)
 				.onMessage(BytesMessage.class, this::handle)
 				.onMessage(BytesAckMessage.class, this::handle)
+				.onMessage(ShutdownMessage.class, this::handle)
 				.build();
 	}
 
@@ -214,6 +221,10 @@ public class LargeMessageProxy extends AbstractBehavior<LargeMessageProxy.Messag
 
 		this.parent.tell(largeMessage);
 		return this;
+	}
+
+	private Behavior<Message> handle(ShutdownMessage message) {
+		return Behaviors.stopped();
 	}
 
 }
