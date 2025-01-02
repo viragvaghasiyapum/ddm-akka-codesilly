@@ -16,7 +16,6 @@ import de.ddm.singletons.InputConfigurationSingleton;
 import de.ddm.singletons.OutputConfigurationSingleton;
 import de.ddm.singletons.SystemConfigurationSingleton;
 import de.ddm.structures.InclusionDependency;
-import de.ddm.utils.MemoryUtils;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -24,6 +23,8 @@ import lombok.NoArgsConstructor;
 import java.io.File;
 import java.math.BigInteger;
 import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
 public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
@@ -96,25 +97,27 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		super(context);
 		Reaper.watchWithDefaultReaper(this.getContext().getSelf());
 		this.discoverNaryDependencies = SystemConfigurationSingleton.get().isHardMode();
-		if(this.discoverNaryDependencies)
-			this.getContext().getLog().warn("Nary ING discovery is not yet implementeed in this program version. Starting unary ING discovery...");
+
+		if (this.discoverNaryDependencies) {
+			this.getContext().getLog().warn("Nary IND discovery not implemented, Initiating Unary IND discovery...");
+		}
 		this.inputFiles = InputConfigurationSingleton.get().getInputFiles();
 		this.headerLines = new String[this.inputFiles.length][];
+		this.inputReadersList = new ArrayList<>(inputFiles.length);
 
-		this.inputReaders = new ArrayList<>(inputFiles.length);
-		for (int id = 0; id < this.inputFiles.length; id++)
-			this.inputReaders.add(context.spawn(InputReader.create(id, this.inputFiles[id]), InputReader.DEFAULT_NAME + "_" + id));
+		for (int id = 0; id < this.inputFiles.length; id++) {
+			this.inputReadersList.add(context.spawn(InputReader.create(id, this.inputFiles[id]), InputReader.DEFAULT_NAME + "_" + id));
+		}
 		this.resultCollector = context.spawn(ResultCollector.create(), ResultCollector.DEFAULT_NAME);
 		this.largeMessageProxy = this.getContext().spawn(LargeMessageProxy.create(this.getContext().getSelf().unsafeUpcast()), LargeMessageProxy.DEFAULT_NAME);
 
-		this.dependencyWorkers = new ArrayList<>();
+		this.dependencyWorkersList = new ArrayList<>();
 		this.hashMap = new HashMap<>();
-		this.distinctValues = new HashMap<>();
 
-		this.shifts = new int[this.inputFiles.length];
-		this.headerReadDone = new boolean[this.inputFiles.length];
-		this.inputReaderFinishedFlag = new boolean[inputFiles.length];
-		this.idleDependencyWorker = new ArrayList<>();
+		this.bitShifts = new int[this.inputFiles.length];
+		this.isHeaderRead = new boolean[this.inputFiles.length];
+		this.isInputReadingCompleted = new boolean[inputFiles.length];
+		this.idleWorker = new ArrayList<>();
 		this.workerProxy = new HashMap<>();
 
 		context.getSystem().receptionist().tell(Receptionist.register(dependencyMinerService, context.getSelf()));
@@ -125,32 +128,24 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	/////////////////
 
 	private long startTime;
-	private final int batchSize = OutputConfigurationSingleton.get().getInputReaderBatchSize();
-
+	private final int batchSize = OutputConfigurationSingleton.get().getInputBatchSize();
 	private final boolean discoverNaryDependencies;
 	private final File[] inputFiles;
+	private final List<ActorRef<DependencyWorker.Message>> dependencyWorkersList;
 	private final String[][] headerLines;
-
-	private final List<ActorRef<InputReader.Message>> inputReaders;
 	private final ActorRef<ResultCollector.Message> resultCollector;
 	private final ActorRef<LargeMessageProxy.Message> largeMessageProxy;
 
-	private final List<ActorRef<DependencyWorker.Message>> dependencyWorkers;
-
+	private final List<ActorRef<InputReader.Message>> inputReadersList;
 	private final HashMap<String, BigInteger> hashMap;
-	private final HashMap<Integer, HashSet<String>> distinctValues;
-	private final boolean[] inputReaderFinishedFlag;
-	private final int[] shifts;
-	private final boolean[] headerReadDone;
-	private int numColumns = 0;
-
-	private boolean[][] result;
-
-	private Iterator<Integer> valueStream;
-
-	private final List<ActorRef<DependencyWorker.Message>> idleDependencyWorker;
-
+	private final boolean[] isInputReadingCompleted;
+	private final int[] bitShifts;
+	private final boolean[] isHeaderRead;
+	private int columnNumber = 0;
 	private final HashMap<ActorRef<DependencyWorker.Message>, ActorRef<LargeMessageProxy.Message>> workerProxy;
+	private final List<ActorRef<DependencyWorker.Message>> idleWorker;
+	private boolean[][] result;
+	private Iterator<BigInteger> valueStream;
 
 	////////////////////
 	// Actor Behavior //
@@ -170,10 +165,9 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	}
 
 	private Behavior<Message> handle(StartMessage message) {
-		for (ActorRef<InputReader.Message> inputReader : this.inputReaders)
+		for (ActorRef<InputReader.Message> inputReader : this.inputReadersList) {
 			inputReader.tell(new InputReader.ReadHeaderMessage(this.getContext().getSelf()));
-		//for (ActorRef<InputReader.Message> inputReader : this.inputReaders)
-			//inputReader.tell(new InputReader.ReadBatchMessage(this.getContext().getSelf(), 10000));
+		}
 		this.startTime = System.currentTimeMillis();
 		return this;
 	}
@@ -181,186 +175,166 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	private Behavior<Message> handle(HeaderMessage message) {
 		this.headerLines[message.getId()] = message.getHeader();
 		int id = message.getId();
-		int shift = message.getHeader().length;
-		this.numColumns += shift;
-
-		for(int i = id + 1; i < this.shifts.length; i++){
-			shifts[i] += shift;
+		int shiftVal = message.getHeader().length;
+		this.columnNumber += shiftVal;
+		for(int i = id + 1; i < this.bitShifts.length; i++) {
+			bitShifts[i] += shiftVal;
 		}
 
-		this.headerReadDone[id] = true;
-		this.getContext().getLog().info("Finished header reading of File {}", id);
-		for(boolean b : this.headerReadDone)
+		this.isHeaderRead[id] = true;
+		this.getContext().getLog().info("Finished header reading of file : {}", id);
+		for(boolean b : this.isHeaderRead) {
 			if(!b) return this;
-
-		this.getContext().getLog().info("Finished all header readings.");
-
-
-		this.result = new boolean[this.numColumns][this.numColumns];
-		for(int i = 0; i < this.numColumns; i++)
-			for(int j = 0; j < this.numColumns; j++)
+		}
+		this.getContext().getLog().info("All header reading finished.");
+		this.result = new boolean[this.columnNumber][this.columnNumber];
+		for(int i = 0; i < this.columnNumber; i++) {
+			for (int j = 0; j < this.columnNumber; j++) {
 				this.result[i][j] = true;
-
-		for (ActorRef<InputReader.Message> inputReader : this.inputReaders) {
+			}
+		}
+		for (ActorRef<InputReader.Message> inputReader : this.inputReadersList) {
 			inputReader.tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
 		}
-
 		return this;
 	}
 
 	private Behavior<Message> handle(BatchMessage message) {
-		// Ignoring batch content for now ... but I could do so much with it.
-
 		int fileId = message.getId();
 		List<String[]> batch = message.getBatch();
-
-		if(batch.isEmpty()){
-			this.inputReaderFinishedFlag[fileId] = true;
-			for(boolean b : this.inputReaderFinishedFlag){
-				if(!b)
+		if(batch.isEmpty()) {
+			this.isInputReadingCompleted[fileId] = true;
+			for(boolean b : this.isInputReadingCompleted) {
+				if(!b) {
 					return this;
+				}
 			}
-
-			// Process all distinct values to create value sets for comparison
-            for(Map.Entry<String, BigInteger> entry : this.hashMap.entrySet()) {
-                if(entry.getKey() == null) continue; // Skip null entries
-                BigInteger columnMask = entry.getValue();
-                for(int i = 0; i < this.numColumns; i++) {
-                    if(columnMask.testBit(i)) {
-                        distinctValues.computeIfAbsent(i, k -> new HashSet<>()).add(entry.getKey());
-                    }
-                }
-            }
-
-			this.valueStream = this.distinctValues.keySet().iterator();
-
-			this.getContext().getLog().info("Input Reading Finished after {}ms.", System.currentTimeMillis() - this.startTime);
-
-			while(!this.idleDependencyWorker.isEmpty()){
-				if(!this.valueStream.hasNext())
+			this.valueStream = this.hashMap.values().iterator();
+			this.getContext().getLog().info("Finished input reading after {} ms.", System.currentTimeMillis() - this.startTime);
+			while(!this.idleWorker.isEmpty()) {
+				if(!this.valueStream.hasNext()) {
 					break;
-				ActorRef<DependencyWorker.Message> dependencyWorker = this.idleDependencyWorker.get(0);
-				this.idleDependencyWorker.remove(dependencyWorker);
-				this.dependencyWorkers.add(dependencyWorker);
-				this.sendTaskIfAvailable(dependencyWorker);
+				}
+				ActorRef<DependencyWorker.Message> dependencyWorker = this.idleWorker.get(0);
+				this.idleWorker.remove(dependencyWorker);
+				this.dependencyWorkersList.add(dependencyWorker);
+				this.forwardAvailableTasks(dependencyWorker);
 			}
 			return this;
 		}
 
 		for(String[] line : batch) {
-            for(int i = 0; i < this.headerLines[fileId].length; i++) {
-                if(line[i] != null && !line[i].trim().isEmpty()) {
-                    BigInteger representation = BigInteger.ONE.shiftLeft(this.shifts[fileId] + i);
-                    this.hashMap.merge(line[i], representation, BigInteger::or);
-                }
-            }
-        }
-
-		this.inputReaders.get(message.getId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
+			for(int i = 0; i < this.headerLines[fileId].length; i++){
+				BigInteger representation = BigInteger.ONE.shiftLeft(this.bitShifts[fileId] + i);
+				this.hashMap.merge(line[i], representation, (v1,v2) -> v1.or(v2));
+			}
+		}
+		this.inputReadersList.get(message.getId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
 		return this;
 	}
 
-	private void sendTaskIfAvailable(ActorRef<DependencyWorker.Message> dependencyWorker){
-		if(!this.valueStream.hasNext())
+	private void forwardAvailableTasks(ActorRef<DependencyWorker.Message> dependencyWorker){
+		if(!this.valueStream.hasNext()) {
 			return;
-
-		List<Integer> workerBatch =  new ArrayList<>();
-        Map<Integer, HashSet<String>> batchValues = new HashMap<>();
-
+		}
+		List<BigInteger> workerBatch =  new ArrayList<>();
 		for(int i = 0; i < this.batchSize; i++) {
-            if(!this.valueStream.hasNext())
-                break;
-            Integer columnId = this.valueStream.next();  // Now correctly gets Integer
-            workerBatch.add(columnId);
-            batchValues.put(columnId, this.distinctValues.get(columnId));
-        }
-
-
+			if(!this.valueStream.hasNext()) {
+				break;
+			}
+			workerBatch.add(this.valueStream.next());
+		}
 		this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(
-            new DependencyWorker.TaskMessage(
-                this.largeMessageProxy,
-                workerBatch,
-                batchValues,
-                this.numColumns
-            ),
-            this.workerProxy.get(dependencyWorker)
-        ));
+				new DependencyWorker.TaskMessage(
+						this.largeMessageProxy,
+						workerBatch,
+						this.columnNumber
+				),
+				this.workerProxy.get(dependencyWorker)
+		));
 	}
 
 	private Behavior<Message> handle(RegistrationMessage message) {
-		ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
-		if (!this.dependencyWorkers.contains(dependencyWorker) && !this.idleDependencyWorker.contains(dependencyWorker)) {
-			this.workerProxy.put(dependencyWorker, message.getLargeMessageProxy());
-			if(this.valueStream == null || !this.valueStream.hasNext()){
-				this.idleDependencyWorker.add(dependencyWorker);
-			}
-			else{
-				this.sendTaskIfAvailable(dependencyWorker);
-				this.dependencyWorkers.add(dependencyWorker);
+		ActorRef<DependencyWorker.Message> worker = message.getDependencyWorker();
+		if (!this.dependencyWorkersList.contains(worker) && !this.idleWorker.contains(worker)) {
+			this.workerProxy.put(worker, message.getLargeMessageProxy());
+			if(this.valueStream == null || !this.valueStream.hasNext()) {
+				this.idleWorker.add(worker);
+			} else {
+				this.forwardAvailableTasks(worker);
+				this.dependencyWorkersList.add(worker);
 			}
 		}
 		return this;
 	}
 
 	private Behavior<Message> handle(CompletionMessage message) {
-
 		boolean[][] workerResult = message.getResult();
 		ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
-		for(int i = 0; i < this.numColumns; i++){
-			for(int j = 0; j < this.numColumns; j++){
+		for(int i = 0; i < this.columnNumber; i++) {
+			for(int j = 0; j < this.columnNumber; j++) {
 				this.result[i][j] = this.result[i][j] && workerResult[i][j];
 			}
 		}
-
 		if(!this.valueStream.hasNext()){
-			this.dependencyWorkers.remove(dependencyWorker);
-			this.idleDependencyWorker.add(dependencyWorker);
-			if(this.dependencyWorkers.size() == 0){
+			this.dependencyWorkersList.remove(dependencyWorker);
+			this.idleWorker.add(dependencyWorker);
+			if(this.dependencyWorkersList.isEmpty()) {
 				this.end();
 			}
-		}
-		else{
-			this.sendTaskIfAvailable(dependencyWorker);
+		} else {
+			this.forwardAvailableTasks(dependencyWorker);
 		}
 		return this;
 	}
 
 	private void end() {
 		List<InclusionDependency> dependencies = new ArrayList<>();
-		for(int i = 0; i < this.numColumns; i++){
-			for(int j = 0; j < this.numColumns; j++){
-				if(i == j) continue;
-				if(!this.result[i][j]) continue;
+		for(int i = 0; i < this.columnNumber; i++){
+			for(int j = 0; j < this.columnNumber; j++) {
+				if(i == j) {
+					continue;
+				}
+				if(!this.result[i][j]) {
+					continue;
+				}
 				int fileIdI = this.findFileId(i);
 				int fileIdJ = this.findFileId(j);
-				int columnIdI = i - this.shifts[fileIdI];
-				int columnIdJ = j - this.shifts[fileIdJ];
-				dependencies.add(new InclusionDependency(this.inputFiles[fileIdI], new String[]{this.headerLines[fileIdI][columnIdI]}, this.inputFiles[fileIdJ], new String[]{this.headerLines[fileIdJ][columnIdJ]}));
+				int columnIdI = i - this.bitShifts[fileIdI];
+				int columnIdJ = j - this.bitShifts[fileIdJ];
+				dependencies.add(
+						new InclusionDependency(
+								this.inputFiles[fileIdI],
+								new String[]{this.headerLines[fileIdI][columnIdI]},
+								this.inputFiles[fileIdJ],
+								new String[]{this.headerLines[fileIdJ][columnIdJ]}
+						)
+				);
 			}
 		}
 		this.resultCollector.tell(new ResultCollector.ResultMessage(dependencies));
 		this.resultCollector.tell(new ResultCollector.FinalizeMessage());
 		long discoveryTime = System.currentTimeMillis() - this.startTime;
-		this.getContext().getLog().info("Finished mining within {} ms!", discoveryTime);
+		this.getContext().getLog().info("Finished mining in {} ms!", discoveryTime);
 	}
 
 	private int findFileId(int columnId){
 		for(int fileId = 0; fileId < this.inputFiles.length - 1; fileId++){
-			if(this.shifts[fileId + 1] > columnId)
+			if(this.bitShifts[fileId + 1] > columnId) {
 				return fileId;
+			}
 		}
 		return this.inputFiles.length - 1;
 	}
 
 	private Behavior<Message> handle(Terminated signal) {
-		this.getContext().getLog().error("Watched Worker terminated. This is unhandled.");
+		this.getContext().getLog().error("Termination Signal is not handled.");
 		return this;
 	}
 
-	private Behavior<Message> handle(ShutdownMessage message){
-		//this.largeMessageProxy.tell(new LargeMessageProxy.ShutdownMessage());
+	private Behavior<Message> handle(ShutdownMessage message) {
 		this.resultCollector.tell(new ResultCollector.ShutdownMessage());
-		for(ActorRef<InputReader.Message> inputReader:this.inputReaders){
+		for(ActorRef<InputReader.Message> inputReader:this.inputReadersList) {
 			inputReader.tell(new InputReader.ShutdownMessage());
 		}
 		return Behaviors.stopped();

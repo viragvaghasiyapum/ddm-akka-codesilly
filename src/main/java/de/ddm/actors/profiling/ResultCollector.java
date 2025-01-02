@@ -60,13 +60,13 @@ public class ResultCollector extends AbstractBehavior<ResultCollector.Message> {
 
 	private ResultCollector(ActorContext<Message> context) throws IOException {
 		super(context);
-
 		File file = new File(OutputConfigurationSingleton.get().getOutputFileName());
-		if (file.exists() && !file.delete())
+		if (file.exists() && !file.delete()) {
 			throw new IOException("Could not delete existing result file: " + file.getName());
-		if (!file.createNewFile())
+		}
+		if (!file.createNewFile()) {
 			throw new IOException("Could not create result file: " + file.getName());
-
+		}
 		this.writer = new BufferedWriter(new FileWriter(file));
 	}
 
@@ -91,19 +91,16 @@ public class ResultCollector extends AbstractBehavior<ResultCollector.Message> {
 	}
 
 	private Behavior<Message> handle(ResultMessage message) throws IOException {
-//		this.getContext().getLog().info("Received {} INDs!", message.getInclusionDependencies().size());
-
+		this.getContext().getLog().info("Received {} INDs!", message.getInclusionDependencies().size());
 		for (InclusionDependency ind : message.getInclusionDependencies()) {
 			this.writer.write(ind.toString());
 			this.writer.newLine();
 		}
-
 		return this;
 	}
 
 	private Behavior<Message> handle(FinalizeMessage message) throws IOException {
-		this.getContext().getLog().info("Received FinalizeMessage!");
-
+		this.getContext().getLog().info("All things have been finalized, message received, over and out!");
 		this.writer.flush();
 		this.getContext().getSystem().unsafeUpcast().tell(new Guardian.ShutdownMessage());
 		return this;

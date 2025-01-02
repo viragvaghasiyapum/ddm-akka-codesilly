@@ -13,9 +13,10 @@ import de.ddm.serialization.AkkaSerializable;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
-import java.util.HashSet;
+
+import java.util.Random;
+import java.math.BigInteger;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message> {
@@ -40,10 +41,9 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	@AllArgsConstructor
 	public static class TaskMessage implements Message {
 		private static final long serialVersionUID = -4667745204456518160L;
-        ActorRef<LargeMessageProxy.Message> dependencyMinerLargeMessageProxy;
-        List<Integer> batch; // Lombok will generate getColumnBatch()
-        Map<Integer, HashSet<String>> batchValues;  // Important: Must match exact type from DependencyMiner
-        int numColumns;
+		ActorRef<LargeMessageProxy.Message> dependencyMinerLargeMessageProxy;
+		List<BigInteger> batch;
+		int numColumns;
 	}
 	@Getter
 	@NoArgsConstructor
@@ -92,39 +92,40 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
 	private Behavior<Message> handle(ReceptionistListingMessage message) {
 		Set<ActorRef<DependencyMiner.Message>> dependencyMiners = message.getListing().getServiceInstances(DependencyMiner.dependencyMinerService);
-		for (ActorRef<DependencyMiner.Message> dependencyMiner : dependencyMiners)
+		for (ActorRef<DependencyMiner.Message> dependencyMiner : dependencyMiners) {
 			dependencyMiner.tell(new DependencyMiner.RegistrationMessage(this.getContext().getSelf(), this.largeMessageProxy));
+		}
 		return this;
 	}
 
 	private Behavior<Message> handle(TaskMessage message) {
-		this.getContext().getLog().info("Working!");
+		this.getContext().getLog().info("Working on task...");
 		int numColumns = message.getNumColumns();
 		boolean[][] result = new boolean[numColumns][numColumns];
-		// For each column in the batch
-        for(Integer columnI : message.getBatch()) {
-            Set<String> valuesI = message.getBatchValues().get(columnI);
-            
-            // Compare with all other columns
-            for(int j = 0; j < numColumns; j++) {
-                if(columnI == j) continue;
-                
-                Set<String> valuesJ = message.getBatchValues().get(j);
-                if(valuesJ == null) continue; // Skip if column j hasn't been processed yet
-                
-                // Check if all non-null values in column i are contained in column j
-                if(valuesI.stream().allMatch(valuesJ::contains)) {
-                    result[columnI][j] = true; // Column i is included in column j
-                }
-            }
-        }
-
-		this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(new DependencyMiner.CompletionMessage(this.getContext().getSelf(), result), message.getDependencyMinerLargeMessageProxy()));
+		for(int columnL = 0; columnL < numColumns; columnL++) {
+			outerLoop:
+			for(int columnR = 0; columnR < numColumns; columnR++) {
+				if(columnL == columnR) {
+					continue;
+				}
+				for(BigInteger value: message.getBatch()) {
+					if(value.testBit(columnL) && !value.testBit(columnR)) {
+						continue outerLoop;
+					}
+				}
+				result[columnL][columnR] = true;
+			}
+		}
+		this.largeMessageProxy.tell(
+				new LargeMessageProxy.SendMessage(
+						new DependencyMiner.CompletionMessage(this.getContext().getSelf(), result),
+						message.getDependencyMinerLargeMessageProxy()
+				)
+		);
 		return this;
 	}
 
 	private Behavior<Message> handle(ShutdownMessage message) {
-		//this.largeMessageProxy.tell(new LargeMessageProxy.ShutdownMessage());
 		return Behaviors.stopped();
 	}
 }

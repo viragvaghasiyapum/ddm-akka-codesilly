@@ -67,11 +67,11 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 		super(context);
 		Reaper.watchWithDefaultReaper(this.getContext().getSelf());
 		this.id = id;
-		this.reader = InputConfigurationSingleton.get().createCSVReader(inputFile);
+		this.csvReader = InputConfigurationSingleton.get().createCSVReader(inputFile);
 		this.header = InputConfigurationSingleton.get().getHeader(inputFile);
-		
-		if (InputConfigurationSingleton.get().isFileHasHeader())
-			this.reader.readNext();
+		if (InputConfigurationSingleton.get().isFileHasHeader()) {
+			this.csvReader.readNext();
+		}
 	}
 
 	/////////////////
@@ -79,8 +79,8 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 	/////////////////
 
 	private final int id;
-	private final int batchSize = OutputConfigurationSingleton.get().getInputReaderBatchSize();
-	private final CSVReader reader;
+	private final int batchSize = OutputConfigurationSingleton.get().getInputBatchSize();
+	private final CSVReader csvReader;
 	private final String[] header;
 
 	////////////////////
@@ -105,23 +105,23 @@ public class InputReader extends AbstractBehavior<InputReader.Message> {
 	private Behavior<Message> handle(ReadBatchMessage message) throws IOException, CsvValidationException {
 		List<String[]> batch = new ArrayList<>(this.batchSize);
 		for (int i = 0; i < this.batchSize; i++) {
-			String[] line = this.reader.readNext();
-			if (line == null)
+			String[] line = this.csvReader.readNext();
+			if (line == null) {
 				break;
+			}
 			batch.add(line);
 		}
-
 		message.getReplyTo().tell(new DependencyMiner.BatchMessage(this.id, batch));
 		return this;
 	}
 
 	private Behavior<Message> handle(PostStop signal) throws IOException {
-		this.reader.close();
+		this.csvReader.close();
 		return this;
 	}
 
 	private Behavior<Message> handle(ShutdownMessage message) throws IOException {
-		this.reader.close();
+		this.csvReader.close();
 		return Behaviors.stopped();
 	}
 }
