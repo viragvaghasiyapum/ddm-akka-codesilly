@@ -1,6 +1,14 @@
 # ddm-akka
 Akka example and homework code for the "Big Data Systems" lecture.
 
+# Team details
+- Team Name: CodeSilly
+- Team Members: 
+```
+  Virag Vaghasiya : viragvagahsiya.work@gmail.com
+  Ananya Kalia    : ananyakaliawork@gmail.com
+```
+
 ## Requirements
 - Java Version >= 11
 - Maven Compiler Version >= 3.8.1
