@@ -13,10 +13,9 @@ import de.ddm.serialization.AkkaSerializable;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
-
-import java.util.Random;
-import java.math.BigInteger;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message> {
@@ -41,9 +40,10 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	@AllArgsConstructor
 	public static class TaskMessage implements Message {
 		private static final long serialVersionUID = -4667745204456518160L;
-		ActorRef<LargeMessageProxy.Message> dependencyMinerLargeMessageProxy;
-		List<BigInteger> batch;
-		int numColumns;
+        ActorRef<LargeMessageProxy.Message> dependencyMinerLargeMessageProxy;
+        List<Integer> batch; // Lombok will generate getColumnBatch()
+        Map<Integer, HashSet<String>> batchValues;  // Important: Must match exact type from DependencyMiner
+        int numColumns;
 	}
 	@Getter
 	@NoArgsConstructor
@@ -101,20 +101,25 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 		this.getContext().getLog().info("Working!");
 		int numColumns = message.getNumColumns();
 		boolean[][] result = new boolean[numColumns][numColumns];
-		for(int i = 0; i < numColumns; i++){
-			outerLoop:
-			for(int j = 0; j < numColumns; j++){
-				if(i == j) continue;
-				for(BigInteger value: message.getBatch()){
-					if(value.testBit(i) && !value.testBit(j))
-						continue outerLoop;
-				}
-				result[i][j] = true; //Column i seems to be included in column j
-			}
-		}
+		// For each column in the batch
+        for(Integer columnI : message.getBatch()) {
+            Set<String> valuesI = message.getBatchValues().get(columnI);
+            
+            // Compare with all other columns
+            for(int j = 0; j < numColumns; j++) {
+                if(columnI == j) continue;
+                
+                Set<String> valuesJ = message.getBatchValues().get(j);
+                if(valuesJ == null) continue; // Skip if column j hasn't been processed yet
+                
+                // Check if all non-null values in column i are contained in column j
+                if(valuesI.stream().allMatch(valuesJ::contains)) {
+                    result[columnI][j] = true; // Column i is included in column j
+                }
+            }
+        }
 
 		this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(new DependencyMiner.CompletionMessage(this.getContext().getSelf(), result), message.getDependencyMinerLargeMessageProxy()));
-
 		return this;
 	}
 

@@ -11,7 +11,6 @@ import akka.actor.typed.receptionist.Receptionist;
 import akka.actor.typed.receptionist.ServiceKey;
 import de.ddm.actors.patterns.LargeMessageProxy;
 import de.ddm.actors.patterns.Reaper;
-import de.ddm.configuration.OutputConfiguration;
 import de.ddm.serialization.AkkaSerializable;
 import de.ddm.singletons.InputConfigurationSingleton;
 import de.ddm.singletons.OutputConfigurationSingleton;
@@ -25,10 +24,6 @@ import lombok.NoArgsConstructor;
 import java.io.File;
 import java.math.BigInteger;
 import java.util.*;
-import java.io.FileNotFoundException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Random;
 
 public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
@@ -114,6 +109,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 		this.dependencyWorkers = new ArrayList<>();
 		this.hashMap = new HashMap<>();
+		this.distinctValues = new HashMap<>();
 
 		this.shifts = new int[this.inputFiles.length];
 		this.headerReadDone = new boolean[this.inputFiles.length];
@@ -142,6 +138,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 	private final List<ActorRef<DependencyWorker.Message>> dependencyWorkers;
 
 	private final HashMap<String, BigInteger> hashMap;
+	private final HashMap<Integer, HashSet<String>> distinctValues;
 	private final boolean[] inputReaderFinishedFlag;
 	private final int[] shifts;
 	private final boolean[] headerReadDone;
@@ -149,7 +146,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
 	private boolean[][] result;
 
-	private Iterator<BigInteger> valueStream;
+	private Iterator<Integer> valueStream;
 
 	private final List<ActorRef<DependencyWorker.Message>> idleDependencyWorker;
 
@@ -224,7 +221,19 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 					return this;
 			}
 
-			this.valueStream = this.hashMap.values().iterator();
+			// Process all distinct values to create value sets for comparison
+            for(Map.Entry<String, BigInteger> entry : this.hashMap.entrySet()) {
+                if(entry.getKey() == null) continue; // Skip null entries
+                BigInteger columnMask = entry.getValue();
+                for(int i = 0; i < this.numColumns; i++) {
+                    if(columnMask.testBit(i)) {
+                        distinctValues.computeIfAbsent(i, k -> new HashSet<>()).add(entry.getKey());
+                    }
+                }
+            }
+
+			this.valueStream = this.distinctValues.keySet().iterator();
+
 			this.getContext().getLog().info("Input Reading Finished after {}ms.", System.currentTimeMillis() - this.startTime);
 
 			while(!this.idleDependencyWorker.isEmpty()){
@@ -238,12 +247,14 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 			return this;
 		}
 
-			for(String[] line : batch){
-				for(int i = 0; i < this.headerLines[fileId].length; i++){
-					BigInteger representation = BigInteger.ONE.shiftLeft(this.shifts[fileId] + i);
-					this.hashMap.merge(line[i], representation, (v1,v2) -> v1.or(v2));
-				}
-			}
+		for(String[] line : batch) {
+            for(int i = 0; i < this.headerLines[fileId].length; i++) {
+                if(line[i] != null && !line[i].trim().isEmpty()) {
+                    BigInteger representation = BigInteger.ONE.shiftLeft(this.shifts[fileId] + i);
+                    this.hashMap.merge(line[i], representation, BigInteger::or);
+                }
+            }
+        }
 
 		this.inputReaders.get(message.getId()).tell(new InputReader.ReadBatchMessage(this.getContext().getSelf()));
 		return this;
@@ -253,14 +264,27 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 		if(!this.valueStream.hasNext())
 			return;
 
-		List<BigInteger> workerBatch =  new ArrayList<>();
-		for(int i = 0; i < this.batchSize; i++){
-			if(!this.valueStream.hasNext())
-				break;
-			workerBatch.add(this.valueStream.next());
-		}
+		List<Integer> workerBatch =  new ArrayList<>();
+        Map<Integer, HashSet<String>> batchValues = new HashMap<>();
 
-		this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(new DependencyWorker.TaskMessage(this.largeMessageProxy, workerBatch, this.numColumns), this.workerProxy.get(dependencyWorker)));
+		for(int i = 0; i < this.batchSize; i++) {
+            if(!this.valueStream.hasNext())
+                break;
+            Integer columnId = this.valueStream.next();  // Now correctly gets Integer
+            workerBatch.add(columnId);
+            batchValues.put(columnId, this.distinctValues.get(columnId));
+        }
+
+
+		this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(
+            new DependencyWorker.TaskMessage(
+                this.largeMessageProxy,
+                workerBatch,
+                batchValues,
+                this.numColumns
+            ),
+            this.workerProxy.get(dependencyWorker)
+        ));
 	}
 
 	private Behavior<Message> handle(RegistrationMessage message) {
